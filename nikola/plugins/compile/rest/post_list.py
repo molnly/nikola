@@ -274,7 +274,7 @@ def _do_post_list(start=None, stop=None, reverse=False, tags=None, require_all_t
 
     if date:
         _now = utils.current_time()
-        filtered_timeline = [p for p in filtered_timeline if date_in_range(date, p.date, now=_now)]
+        filtered_timeline = [p for p in filtered_timeline if date_in_range(utils.html_unescape(date), p.date, now=_now)]
 
     for post in filtered_timeline[start:stop:step]:
         if slugs:
@@ -313,6 +313,7 @@ def _do_post_list(start=None, stop=None, reverse=False, tags=None, require_all_t
         'date_format': site.GLOBAL_CONTEXT.get('date_format')[lang],
         'post_list_id': post_list_id,
         'messages': site.MESSAGES,
+        '_link': site.link,
     }
     output = site.template_system.render_template(
         template, None, template_data)

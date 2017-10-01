@@ -101,8 +101,12 @@ class ScanPosts(PostScanner):
                             destination_base=destination_translatable
                         )
                         timeline.append(post)
-                    except Exception as err:
+                    except Exception:
                         LOGGER.error('Error reading post {}'.format(base_path))
-                        raise err
+                        raise
 
         return timeline
+
+    def supported_extensions(self):
+        """Return a list of supported file extensions, or None if such a list isn't known beforehand."""
+        return list({os.path.splitext(x[0])[1] for x in self.site.config['post_pages']})

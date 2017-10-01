@@ -176,7 +176,7 @@ class Galleries(Task, ImageProcessor):
         self.image_ext_list.extend(self.site.config.get('EXTRA_IMAGE_EXTENSIONS', []))
 
         for k, v in self.site.GLOBAL_CONTEXT['template_hooks'].items():
-            self.kw['||template_hooks|{0}||'.format(k)] = v._items
+            self.kw['||template_hooks|{0}||'.format(k)] = v.calculate_deps()
 
         yield self.group_task()
 
@@ -263,6 +263,7 @@ class Galleries(Task, ImageProcessor):
                     else:
                         folders.append((folder, ft))
 
+                context["gallery_path"] = gallery
                 context["folders"] = natsort.natsorted(
                     folders, alg=natsort.ns.F | natsort.ns.IC)
                 context["crumbs"] = utils.get_crumbs(gallery, index_folder=self, lang=lang)
@@ -437,8 +438,8 @@ class Galleries(Task, ImageProcessor):
         exclude_path = os.path.join(gallery_path, "exclude.meta")
 
         try:
-            f = open(exclude_path, 'r')
-            excluded_image_name_list = f.read().split()
+            with open(exclude_path, 'r') as f:
+                excluded_image_name_list = f.read().split()
         except IOError:
             excluded_image_name_list = []
 
@@ -487,7 +488,7 @@ class Galleries(Task, ImageProcessor):
             'targets': [thumb_path],
             'actions': [
                 (self.resize_image,
-                    (img, thumb_path, self.kw['thumbnail_size'], False, self.kw['preserve_exif_data'],
+                    (img, thumb_path, self.kw['thumbnail_size'], True, self.kw['preserve_exif_data'],
                      self.kw['exif_whitelist']))
             ],
             'clean': True,
@@ -503,7 +504,7 @@ class Galleries(Task, ImageProcessor):
             'targets': [orig_dest_path],
             'actions': [
                 (self.resize_image,
-                    (img, orig_dest_path, self.kw['max_image_size'], False, self.kw['preserve_exif_data'],
+                    (img, orig_dest_path, self.kw['max_image_size'], True, self.kw['preserve_exif_data'],
                      self.kw['exif_whitelist']))
             ],
             'clean': True,

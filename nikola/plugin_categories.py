@@ -95,6 +95,10 @@ class PostScanner(BasePlugin):
         """Create a list of posts from some source. Returns a list of Post objects."""
         raise NotImplementedError()
 
+    def supported_extensions(self):
+        """Return a list of supported file extensions, or None if such a list isn't known beforehand."""
+        return None
+
 
 class Command(BasePlugin, DoitCommand):
     """Doit command implementation."""
@@ -321,7 +325,7 @@ class PageCompiler(BasePlugin):
         raise NotImplementedError()
 
     def extension(self):
-        """The preferred extension for the output of this compiler."""
+        """Return the preferred extension for the output of this compiler."""
         return ".html"
 
     def read_metadata(self, post, file_metadata_regexp=None, unslugify_titles=False, lang=None):
@@ -332,9 +336,14 @@ class PageCompiler(BasePlugin):
         """Split data from metadata in the raw post content.
 
         This splits in the first empty line that is NOT at the beginning
-        of the document.
+        of the document, or after YAML/TOML metadata without an empty line.
         """
-        split_result = re.split('(\n\n|\r\n\r\n)', data.lstrip(), maxsplit=1)
+        if data.startswith('---'):  # YAML metadata
+            split_result = re.split('(\n---\n|\r\n---\r\n)', data.lstrip(), maxsplit=1)
+        elif data.startswith('+++'):  # TOML metadata
+            split_result = re.split('(\n\\+\\+\\+\n|\r\n\\+\\+\\+\r\n)', data.lstrip(), maxsplit=1)
+        else:
+            split_result = re.split('(\n\n|\r\n\r\n)', data.lstrip(), maxsplit=1)
         if len(split_result) == 1:
             return '', split_result[0]
         # ['metadata', '\n\n', 'post content']
@@ -397,6 +406,12 @@ class ShortcodePlugin(BasePlugin):
     """A plugin that adds a shortcode."""
 
     name = "dummy_shortcode_plugin"
+
+    def set_site(self, site):
+        """Set Nikola site."""
+        self.site = site
+        site.register_shortcode(self.name, self.handler)
+        return super(ShortcodePlugin, self).set_site(site)
 
 
 class Importer(Command):
@@ -556,7 +571,7 @@ class Taxonomy(BasePlugin):
         Whether to show the posts for one classification as an index or
         as a post list.
 
-    subcategories_list_template = "taxonomy_list":
+    subcategories_list_template = "taxonomy_list.tmpl":
         The template to use for the subcategories list when
         show_list_as_subcategories_list is True.
 
@@ -592,6 +607,12 @@ class Taxonomy(BasePlugin):
         language, or only the classifications for one language in its language's
         pages.
 
+    add_other_languages_variable = False:
+        In case this is `True`, each classification page will get a list
+        of triples `(other_lang, other_classification, title)` of classifications
+        in other languages which should be linked. The list will be stored in the
+        variable `other_languages`.
+
     path_handler_docstrings:
         A dictionary of docstrings for path handlers. See eg. nikola.py for
         examples.  Must be overridden, keys are "taxonomy_index", "taxonomy",
@@ -613,7 +634,7 @@ class Taxonomy(BasePlugin):
     include_posts_into_hierarchy_root = False
     show_list_as_subcategories_list = False
     show_list_as_index = False
-    subcategories_list_template = "taxonomy_list"
+    subcategories_list_template = "taxonomy_list.tmpl"
     generate_atom_feeds_for_post_lists = False
     template_for_single_list = "tagindex.tmpl"
     template_for_classification_overview = "list.tmpl"
@@ -623,6 +644,7 @@ class Taxonomy(BasePlugin):
     minimum_post_count_per_classification_in_overview = 1
     omit_empty_classifications = False
     also_create_classifications_from_other_languages = True
+    add_other_languages_variable = False
     path_handler_docstrings = {
         'taxonomy_index': '',
         'taxonomy': '',
@@ -686,9 +708,10 @@ class Taxonomy(BasePlugin):
         raise NotImplementedError()
 
     def get_overview_path(self, lang, dest_type='page'):
-        """A path handler for the classification overview.
+        """Return path for classification overview.
 
-        Must return one or two values (in this order):
+        This path handler for the classification overview must return one or
+        two values (in this order):
          * a list or tuple of strings: the path relative to OUTPUT_DIRECTORY;
          * a string with values 'auto', 'always' or 'never', indicating whether
            INDEX_FILE should be added or not.
@@ -706,9 +729,10 @@ class Taxonomy(BasePlugin):
         raise NotImplementedError()
 
     def get_path(self, classification, lang, dest_type='page'):
-        """A path handler for the given classification.
+        """Return path to the classification page.
 
-        Must return one to three values (in this order):
+        This path handler for the given classification must return one to
+        three values (in this order):
          * a list or tuple of strings: the path relative to OUTPUT_DIRECTORY;
          * a string with values 'auto', 'always' or 'never', indicating whether
            INDEX_FILE should be added or not;
@@ -763,8 +787,9 @@ class Taxonomy(BasePlugin):
         Must return a tuple of two dicts. The first is merged into the page's context,
         the second will be put into the uptodate list of all generated tasks.
 
-        For hierarchical taxonomies, node is the `utils.TreeNode` element corresponding
-        to the classification.
+        For hierarchical taxonomies, node is the `hierarchy_utils.TreeNode` element
+        corresponding to the classification. Note that `node` can still be `None`
+        if `also_create_classifications_from_other_languages` is `True`.
 
         Context must contain `title`, which should be something like 'Posts about <classification>'.
         """
@@ -784,8 +809,22 @@ class Taxonomy(BasePlugin):
         For compatibility reasons, the list could be stored somewhere else as well.
 
         In case `has_hierarchy` is `True`, `flat_hierarchy_per_lang` is the flat
-        hierarchy consisting of `utils.TreeNode` elements, and `hierarchy_lookup_per_lang`
-        is the corresponding hierarchy lookup mapping classification strings to
-        `utils.TreeNode` objects.
+        hierarchy consisting of `hierarchy_utils.TreeNode` elements, and
+        `hierarchy_lookup_per_lang` is the corresponding hierarchy lookup mapping
+        classification strings to `hierarchy_utils.TreeNode` objects.
         """
         pass
+
+    def get_other_language_variants(self, classification, lang, classifications_per_language):
+        """Return a list of variants of the same classification in other languages.
+
+        Given a `classification` in a language `lang`, return a list of pairs
+        `(other_lang, other_classification)` with `lang != other_lang` such that
+        `classification` should be linked to `other_classification`.
+
+        Classifications where links to other language versions makes no sense
+        should simply return an empty list.
+
+        Provided is a set of classifications per language (`classifications_per_language`).
+        """
+        return []

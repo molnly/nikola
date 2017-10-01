@@ -53,6 +53,7 @@ class Archive(Taxonomy):
     minimum_post_count_per_classification_in_overview = 1
     omit_empty_classifications = False
     also_create_classifications_from_other_languages = False
+    add_other_languages_variable = True
     path_handler_docstrings = {
         'archive_index': False,
         'archive': """Link to archive path, name is the year.
@@ -60,16 +61,12 @@ class Archive(Taxonomy):
         Example:
 
         link://archive/2013 => /archives/2013/index.html""",
-        'archive_atom': """Link to archive Atom path, name is the year.
+        'archive_atom': """Link to archive Atom path, name is the year (archive pages must be indexes).
 
         Example:
 
         link://archive_atom/2013 => /archives/2013/index.atom""",
-        'archive_rss': """Link to archive RSS path, name is the year.
-
-        Example:
-
-        link://archive_rss/2013 => /archives/2013/rss.xml""",
+        'archive_rss': False,
     }
 
     def set_site(self, site):
@@ -132,7 +129,7 @@ class Archive(Taxonomy):
                 return self.site.MESSAGES[lang]['{month} {day}, {year}'].format(year=year, month=month, day=day)
 
     def get_path(self, classification, lang, dest_type='page'):
-        """A path handler for the given classification."""
+        """Return a path for the given classification."""
         components = [self.site.config['ARCHIVE_PATH']]
         if classification:
             components.extend(classification)
@@ -184,6 +181,7 @@ class Archive(Taxonomy):
             "title": title,
             "pagekind": [page_kind, "archive_page"],
             "create_archive_navigation": self.site.config["CREATE_ARCHIVE_NAVIGATION"],
+            "archive_name": classification if classification else None
         }
 
         # Generate links for hierarchies
@@ -214,12 +212,11 @@ class Archive(Taxonomy):
         else:
             context["has_archive_navigation"] = False
         if page_kind == 'index':
-            context["archive_name"] = classification if classification else None
             context["is_feed_stale"] = kw["is_feed_stale"]
         kw.update(context)
         return context, kw
 
-    def postprocess_posts_per_classification(self, posts_per_section_per_language, flat_hierarchy_per_lang=None, hierarchy_lookup_per_lang=None):
+    def postprocess_posts_per_classification(self, posts_per_classification_per_language, flat_hierarchy_per_lang=None, hierarchy_lookup_per_lang=None):
         """Rearrange, modify or otherwise use the list of posts per classification and per language."""
         # Build a lookup table for archive navigation, if we’ll need one.
         if self.site.config['CREATE_ARCHIVE_NAVIGATION']:
@@ -229,14 +226,21 @@ class Archive(Taxonomy):
             for lang, flat_hierarchy in flat_hierarchy_per_lang.items():
                 self.archive_navigation[lang] = defaultdict(list)
                 for node in flat_hierarchy:
+                    if not self.site.config["SHOW_UNTRANSLATED_POSTS"]:
+                        if not [x for x in posts_per_classification_per_language[lang][node.classification_name] if x.is_translation_available(lang)]:
+                            continue
                     self.archive_navigation[lang][len(node.classification_path)].append(node.classification_name)
 
                 # We need to sort it. Natsort means it’s year 10000 compatible!
                 for k, v in self.archive_navigation[lang].items():
                     self.archive_navigation[lang][k] = natsort.natsorted(v, alg=natsort.ns.F | natsort.ns.IC)
 
-        return super(Archive, self).postprocess_posts_per_classification(posts_per_section_per_language, flat_hierarchy_per_lang, hierarchy_lookup_per_lang)
+        return super(Archive, self).postprocess_posts_per_classification(posts_per_classification_per_language, flat_hierarchy_per_lang, hierarchy_lookup_per_lang)
 
     def should_generate_classification_page(self, classification, post_list, lang):
         """Only generates list of posts for classification if this function returns True."""
-        return len(classification.split('/')) < 3 or len(post_list) > 0
+        return classification == '' or len(post_list) > 0
+
+    def get_other_language_variants(self, classification, lang, classifications_per_language):
+        """Return a list of variants of the same classification in other languages."""
+        return [(other_lang, classification) for other_lang, lookup in classifications_per_language.items() if classification in lookup and other_lang != lang]

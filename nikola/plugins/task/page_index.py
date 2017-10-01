@@ -64,6 +64,10 @@ class PageIndex(Taxonomy):
     def classify(self, post, lang):
         """Classify the given post for the given language."""
         destpath = post.destination_path(lang, sep='/')
+        if post.has_pretty_url(lang):
+            idx = '/index.html'
+            if destpath.endswith(idx):
+                destpath = destpath[:-len(idx)]
         i = destpath.rfind('/')
         return [destpath[:i] if i >= 0 else '']
 
@@ -72,7 +76,7 @@ class PageIndex(Taxonomy):
         return dirname
 
     def get_path(self, hierarchy, lang, dest_type='page'):
-        """A path handler for the given classification."""
+        """Return a path for the given classification."""
         return hierarchy, 'always'
 
     def extract_hierarchy(self, dirname):

@@ -265,16 +265,33 @@ class CommandNewPost(Command):
         if "@" in content_format:
             content_format, content_subformat = content_format.split("@")
 
-        if not content_format:  # Issue #400
+        if not content_format and path:
+            # content_format not specified. If path was given, use
+            # it to guess (Issue #2798)
+            extension = os.path.splitext(path)[-1]
+            for compiler, extensions in self.site.config['COMPILERS'].items():
+                if extension in extensions:
+                    content_format = compiler
+
+        elif not content_format and import_file:
+            # content_format not specified. If import_file was given, use
+            # it to guess (Issue #2798)
+            extension = os.path.splitext(import_file)[-1]
+            for compiler, extensions in self.site.config['COMPILERS'].items():
+                if extension in extensions:
+                    content_format = compiler
+
+        elif not content_format:  # Issue #400
             content_format = get_default_compiler(
                 is_post,
                 self.site.config['COMPILERS'],
                 self.site.config['post_pages'])
 
-        if content_format not in compiler_names:
+        elif content_format not in compiler_names:
             LOGGER.error("Unknown {0} format {1}, maybe you need to install a plugin or enable an existing one?".format(content_type, content_format))
             self.print_compilers()
             return
+
         compiler_plugin = self.site.plugin_manager.getPluginByName(
             content_format, "PageCompiler").plugin_object
 
@@ -544,6 +561,6 @@ class CommandNewPost(Command):
     More compilers are available in the Plugins Index.
 
     Compilers marked with ! and ~ require additional configuration:
-        ! not in the PAGES/POSTS tuples (unused)
+        ! not in the POSTS/PAGES tuples and any post scanners (unused)
         ~ not in the COMPILERS dict (disabled)
     Read more: {0}""".format(COMPILERS_DOC_LINK))

@@ -32,6 +32,7 @@ import os
 
 import docutils.core
 import docutils.nodes
+import docutils.transforms
 import docutils.utils
 import docutils.io
 import docutils.readers.standalone
@@ -47,7 +48,8 @@ from nikola.utils import (
     makedirs,
     write_metadata,
     STDERR_HANDLER,
-    LocaleBorg
+    LocaleBorg,
+    map_metadata
 )
 
 
@@ -58,6 +60,44 @@ class CompileRest(PageCompiler):
     friendly_name = "reStructuredText"
     demote_headers = True
     logger = None
+
+    def read_metadata(self, post, file_metadata_regexp=None, unslugify_titles=False, lang=None):
+        """Read the metadata from a post, and return a metadata dict."""
+        if not self.site.config.get('USE_REST_DOCINFO_METADATA'):
+            return {}
+        if lang is None:
+            lang = LocaleBorg().current_lang
+        source_path = post.translated_source_path(lang)
+
+        with io.open(source_path, 'r', encoding='utf-8') as inf:
+            data = inf.read()
+            _, _, _, document = rst2html(data, logger=self.logger, source_path=source_path, transforms=self.site.rst_transforms, no_title_transform=False)
+        meta = {}
+        if 'title' in document:
+            meta['title'] = document['title']
+        for docinfo in document.traverse(docutils.nodes.docinfo):
+            for element in docinfo.children:
+                if element.tagname == 'field':  # custom fields (e.g. summary)
+                    name_elem, body_elem = element.children
+                    name = name_elem.astext()
+                    value = body_elem.astext()
+                elif element.tagname == 'authors':  # author list
+                    name = element.tagname
+                    value = [element.astext() for element in element.children]
+                else:  # standard fields (e.g. address)
+                    name = element.tagname
+                    value = element.astext()
+                name = name.lower()
+
+                meta[name] = value
+
+        # Put 'authors' meta field contents in 'author', too
+        if 'authors' in meta and 'author' not in meta:
+            meta['author'] = '; '.join(meta['authors'])
+
+        # Map metadata from other platforms to names Nikola expects (Issue #2817)
+        map_metadata(meta, 'rest_docinfo', self.site.config)
+        return meta
 
     def compile_string(self, data, source_path=None, is_two_file=True, post=None, lang=None):
         """Compile reST into HTML strings."""
@@ -81,14 +121,19 @@ class CompileRest(PageCompiler):
             'language_code': LEGAL_VALUES['DOCUTILS_LOCALES'].get(LocaleBorg().current_lang, 'en')
         }
 
-        output, error_level, deps = rst2html(
-            data, settings_overrides=settings_overrides, logger=self.logger, source_path=source_path, l_add_ln=add_ln, transforms=self.site.rst_transforms,
+        from nikola import shortcodes as sc
+        new_data, shortcodes = sc.extract_shortcodes(data)
+        if self.site.config.get('HIDE_REST_DOCINFO', False):
+            self.site.rst_transforms.append(RemoveDocinfo)
+        output, error_level, deps, _ = rst2html(
+            new_data, settings_overrides=settings_overrides, logger=self.logger, source_path=source_path, l_add_ln=add_ln, transforms=self.site.rst_transforms,
             no_title_transform=self.site.config.get('NO_DOCUTILS_TITLE_TRANSFORM', False))
         if not isinstance(output, unicode_str):
             # To prevent some weird bugs here or there.
             # Original issue: empty files.  `output` became a bytestring.
             output = output.decode('utf-8')
-        output, shortcode_deps = self.site.apply_shortcodes(output, filename=source_path, with_dependencies=True, extra_context=dict(post=post))
+
+        output, shortcode_deps = self.site.apply_shortcodes_uuid(output, shortcodes, filename=source_path, with_dependencies=True, extra_context=dict(post=post))
         return output, error_level, deps, shortcode_deps
 
     # TODO remove in v8
@@ -132,7 +177,10 @@ class CompileRest(PageCompiler):
             content += '\n'
         with io.open(path, "w+", encoding="utf8") as fd:
             if onefile:
-                fd.write(write_metadata(metadata))
+                _format = self.site.config.get('METADATA_FORMAT', 'nikola').lower()
+                if _format == 'pelican':
+                    _format = 'pelican_rest'
+                fd.write(write_metadata(metadata, _format))
                 fd.write('\n')
             fd.write(content)
 
@@ -203,7 +251,7 @@ class NikolaReader(docutils.readers.standalone.Reader):
 
 def shortcode_role(name, rawtext, text, lineno, inliner,
                    options={}, content=[]):
-    """A shortcode role that passes through raw inline HTML."""
+    """Return a shortcode role that passes through raw inline HTML."""
     return [docutils.nodes.raw('', text, format='html')], []
 
 
@@ -270,7 +318,7 @@ def rst2html(source, source_path=None, source_class=docutils.io.StringInput,
 
         publish_parts(..., settings_overrides={'input_encoding': 'unicode'})
 
-    Parameters: see `publish_programmatically`.
+    For a description of the parameters, see `publish_programmatically`.
 
     WARNING: `reader` should be None (or NikolaReader()) if you want Nikola to report
              reStructuredText syntax errors.
@@ -296,7 +344,7 @@ def rst2html(source, source_path=None, source_class=docutils.io.StringInput,
     pub.set_destination(None, destination_path)
     pub.publish(enable_exit_status=enable_exit_status)
 
-    return pub.writer.parts['docinfo'] + pub.writer.parts['fragment'], pub.document.reporter.max_level, pub.settings.record_dependencies
+    return pub.writer.parts['docinfo'] + pub.writer.parts['fragment'], pub.document.reporter.max_level, pub.settings.record_dependencies, pub.document
 
 
 # Alignment helpers for extensions
@@ -305,3 +353,14 @@ _align_options_base = ('left', 'center', 'right')
 
 def _align_choice(argument):
     return docutils.parsers.rst.directives.choice(argument, _align_options_base + ("none", ""))
+
+
+class RemoveDocinfo(docutils.transforms.Transform):
+    """Remove docinfo nodes."""
+
+    default_priority = 870
+
+    def apply(self):
+        """Remove docinfo nodes."""
+        for node in self.document.traverse(docutils.nodes.docinfo):
+            node.parent.remove(node)

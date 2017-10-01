@@ -24,7 +24,10 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-"""Utility functions to help run filters on files."""
+"""Utility functions to help run filters on files.
+
+All filters defined in this module are registered in Nikola.__init__.
+"""
 
 from functools import wraps
 import os
@@ -42,7 +45,7 @@ except ImportError:
     typo = None  # NOQA
 import requests
 
-from .utils import req_missing, LOGGER
+from .utils import req_missing, LOGGER, slugify
 
 
 class _ConfigurableFilter(object):
@@ -66,10 +69,10 @@ def apply_to_binary_file(f):
     in place.  Reads files in binary mode.
     """
     @wraps(f)
-    def f_in_file(fname):
+    def f_in_file(fname, *args, **kwargs):
         with open(fname, 'rb') as inf:
             data = inf.read()
-        data = f(data)
+        data = f(data, *args, **kwargs)
         with open(fname, 'wb+') as outf:
             outf.write(data)
 
@@ -84,10 +87,10 @@ def apply_to_text_file(f):
     in place.  Reads files in UTF-8.
     """
     @wraps(f)
-    def f_in_file(fname):
+    def f_in_file(fname, *args, **kwargs):
         with io.open(fname, 'r', encoding='utf-8') as inf:
             data = inf.read()
-        data = f(data)
+        data = f(data, *args, **kwargs)
         with io.open(fname, 'w+', encoding='utf-8') as outf:
             outf.write(data)
 
@@ -167,7 +170,7 @@ def closure_compiler(infile, executable='closure-compiler'):
 
 
 @_ConfigurableFilter(executable='OPTIPNG_EXECUTABLE')
-def optipng(infile, executable='optiong'):
+def optipng(infile, executable='optipng'):
     """Run optipng on a file."""
     return runinplace("{} -preserve -o2 -quiet %1".format(executable), infile)
 
@@ -176,6 +179,12 @@ def optipng(infile, executable='optiong'):
 def jpegoptim(infile, executable='jpegoptim'):
     """Run jpegoptim on a file."""
     return runinplace("{} -p --strip-all -q %1".format(executable), infile)
+
+
+@_ConfigurableFilter(executable='JPEGOPTIM_EXECUTABLE')
+def jpegoptim_progressive(infile, executable='jpegoptim'):
+    """Run jpegoptim on a file and convert to progressive."""
+    return runinplace("{} -p --strip-all --all-progressive -q %1".format(executable), infile)
 
 
 @_ConfigurableFilter(executable='HTML_TIDY_EXECUTABLE')
@@ -390,4 +399,103 @@ def _normalize_html(data):
     return '<!DOCTYPE html>\n' + data
 
 
+# The function is used in other filters, so the decorator cannot be used directly.
 normalize_html = apply_to_text_file(_normalize_html)
+
+
+@_ConfigurableFilter(xpath_list='HEADER_PERMALINKS_XPATH_LIST', file_blacklist='HEADER_PERMALINKS_FILE_BLACKLIST')
+def add_header_permalinks(fname, xpath_list=None, file_blacklist=None):
+    """Post-process HTML via lxml to add header permalinks Sphinx-style."""
+    # Blacklist requires custom file handling
+    file_blacklist = file_blacklist or []
+    if fname in file_blacklist:
+        return
+    with io.open(fname, 'r', encoding='utf-8') as inf:
+        data = inf.read()
+    doc = lxml.html.document_fromstring(data)
+    # Get language for slugify
+    try:
+        lang = doc.attrib['lang']  # <html lang="…">
+    except KeyError:
+        # Circular import workaround (utils imports filters)
+        from nikola.utils import LocaleBorg
+        lang = LocaleBorg().current_lang
+
+    xpath_set = set()
+    if not xpath_list:
+        xpath_list = ['*//div[@class="e-content entry-content"]//{hx}']
+    for xpath_expr in xpath_list:
+        for hx in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            xpath_set.add(xpath_expr.format(hx=hx))
+    for x in xpath_set:
+        nodes = doc.findall(x)
+        for node in nodes:
+            parent = node.getparent()
+            if 'id' in node.attrib:
+                hid = node.attrib['id']
+            elif 'id' in parent.attrib:
+                # docutils: <div> has an ID and contains the header
+                hid = parent.attrib['id']
+            else:
+                # Using force-mode, because not every character can appear in a
+                # HTML id
+                node.attrib['id'] = slugify(node.text_content(), lang, True)
+                hid = node.attrib['id']
+
+            new_node = lxml.html.fragment_fromstring('<a href="#{0}" class="headerlink" title="Permalink to this heading">¶</a>'.format(hid))
+            node.append(new_node)
+
+    with io.open(fname, 'w', encoding='utf-8') as outf:
+        outf.write(lxml.html.tostring(doc, encoding="unicode"))
+
+
+@_ConfigurableFilter(top_classes='DEDUPLICATE_IDS_TOP_CLASSES')
+@apply_to_text_file
+def deduplicate_ids(data, top_classes=None):
+    """Post-process HTML via lxml to deduplicate IDs."""
+    if not top_classes:
+        top_classes = ('postpage', 'storypage')
+    doc = lxml.html.document_fromstring(data)
+    elements = doc.xpath('//*')
+    all_ids = [element.attrib.get('id') for element in elements]
+    seen_ids = set()
+    duplicated_ids = set()
+    for i in all_ids:
+        if i is not None and i in seen_ids:
+            duplicated_ids.add(i)
+        else:
+            seen_ids.add(i)
+
+    if duplicated_ids:
+        # Well, that sucks.
+        for i in duplicated_ids:
+            # Results are ordered the same way they are ordered in document
+            offending_elements = doc.xpath('//*[@id="{}"]'.format(i))
+            counter = 2
+            # If this is a story or a post, do it from top to bottom, because
+            # updates to those are more likely to appear at the bottom of pages.
+            # For anything else, including indexes, do it from bottom to top,
+            # because new posts appear at the top of pages.
+            # We also leave the first result out, so there is one element with
+            # "plain" ID
+            if any(doc.find_class(c) for c in top_classes):
+                off = offending_elements[1:]
+            else:
+                off = offending_elements[-2::-1]
+            for e in off:
+                new_id = i
+                while new_id in seen_ids:
+                    new_id = '{0}-{1}'.format(i, counter)
+                    counter += 1
+                e.attrib['id'] = new_id
+                seen_ids.add(new_id)
+                # Find headerlinks that we can fix.
+                headerlinks = e.find_class('headerlink')
+                for hl in headerlinks:
+                    # We might get headerlinks of child elements
+                    if hl.attrib['href'] == '#' + i:
+                        hl.attrib['href'] = '#' + new_id
+                        break
+        return lxml.html.tostring(doc, encoding='unicode')
+    else:
+        return data

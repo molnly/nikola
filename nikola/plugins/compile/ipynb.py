@@ -39,30 +39,12 @@ try:
     from jupyter_client import kernelspec
     from traitlets.config import Config
     flag = True
-    ipy_modern = True
 except ImportError:
-    try:
-        import IPython
-        from IPython.nbconvert.exporters import HTMLExporter
-        if IPython.version_info[0] >= 3:     # API changed with 3.0.0
-            from IPython import nbformat
-            current_nbformat = nbformat.current_nbformat
-            from IPython.kernel import kernelspec
-            ipy_modern = True
-        else:
-            import IPython.nbformat.current as nbformat
-            current_nbformat = 'json'
-            kernelspec = None
-            ipy_modern = False
+    flag = None
 
-        from IPython.config import Config
-        flag = True
-    except ImportError:
-        flag = None
-        ipy_modern = None
-
+from nikola import shortcodes as sc
 from nikola.plugin_categories import PageCompiler
-from nikola.utils import makedirs, req_missing, get_logger, STDERR_HANDLER
+from nikola.utils import makedirs, req_missing, get_logger, STDERR_HANDLER, LocaleBorg
 
 
 class CompileIPynb(PageCompiler):
@@ -80,8 +62,7 @@ class CompileIPynb(PageCompiler):
 
     def _compile_string(self, nb_json):
         """Export notebooks as HTML strings."""
-        if flag is None:
-            req_missing(['ipython[notebook]>=2.0.0'], 'build this site (compile ipynb)')
+        self._req_missing_ipynb()
         c = Config(self.site.config['IPYNB_CONFIG'])
         c.update(get_default_jupyter_config())
         exportHtml = HTMLExporter(config=c)
@@ -92,10 +73,15 @@ class CompileIPynb(PageCompiler):
     def _nbformat_read(in_file):
         return nbformat.read(in_file, current_nbformat)
 
+    def _req_missing_ipynb(self):
+        if flag is None:
+            req_missing(['notebook>=4.0.0'], 'build this site (compile ipynb)')
+
     def compile_string(self, data, source_path=None, is_two_file=True, post=None, lang=None):
         """Compile notebooks into HTML strings."""
-        output = self._compile_string(nbformat.reads(data, current_nbformat))
-        return self.site.apply_shortcodes(output, filename=source_path, with_dependencies=True, extra_context={'post': post})
+        new_data, shortcodes = sc.extract_shortcodes(data)
+        output = self._compile_string(nbformat.reads(new_data, current_nbformat))
+        return self.site.apply_shortcodes_uuid(output, shortcodes, filename=source_path, with_dependencies=True, extra_context=dict(post=post))
 
     # TODO remove in v8
     def compile_html_string(self, source, is_two_file=True):
@@ -126,9 +112,10 @@ class CompileIPynb(PageCompiler):
         As ipynb file support arbitrary metadata as json, the metadata used by Nikola
         will be assume to be in the 'nikola' subfield.
         """
-        if flag is None:
-            req_missing(['ipython[notebook]>=2.0.0'], 'build this site (compile ipynb)')
-        source = post.source_path
+        self._req_missing_ipynb()
+        if lang is None:
+            lang = LocaleBorg().current_lang
+        source = post.translated_source_path(lang)
         with io.open(source, "r", encoding="utf8") as in_file:
             nb_json = nbformat.read(in_file, current_nbformat)
         # Metadata might not exist in two-file posts or in hand-crafted
@@ -137,8 +124,7 @@ class CompileIPynb(PageCompiler):
 
     def create_post(self, path, **kw):
         """Create a new post."""
-        if flag is None:
-            req_missing(['ipython[notebook]>=2.0.0'], 'build this site (compile ipynb)')
+        self._req_missing_ipynb()
         content = kw.pop('content', None)
         onefile = kw.pop('onefile', False)
         kernel = kw.pop('ipython_kernel', None)
@@ -155,12 +141,8 @@ class CompileIPynb(PageCompiler):
             # imported .ipynb file, guaranteed to start with "{" because it’s JSON.
             nb = nbformat.reads(content, current_nbformat)
         else:
-            if ipy_modern:
-                nb = nbformat.v4.new_notebook()
-                nb["cells"] = [nbformat.v4.new_markdown_cell(content)]
-            else:
-                nb = nbformat.new_notebook()
-                nb["worksheets"] = [nbformat.new_worksheet(cells=[nbformat.new_text_cell('markdown', [content])])]
+            nb = nbformat.v4.new_notebook()
+            nb["cells"] = [nbformat.v4.new_markdown_cell(content)]
 
             if kernelspec is not None:
                 if kernel is None:
@@ -188,10 +170,7 @@ class CompileIPynb(PageCompiler):
             nb["metadata"]["nikola"] = metadata
 
         with io.open(path, "w+", encoding="utf8") as fd:
-            if ipy_modern:
-                nbformat.write(nb, fd, 4)
-            else:
-                nbformat.write(nb, fd, 'ipynb')
+            nbformat.write(nb, fd, 4)
 
 
 def get_default_jupyter_config():

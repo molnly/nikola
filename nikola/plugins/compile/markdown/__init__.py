@@ -40,8 +40,9 @@ except ImportError:
     gist_extension = None
     podcast_extension = None
 
+from nikola import shortcodes as sc
 from nikola.plugin_categories import PageCompiler
-from nikola.utils import makedirs, req_missing, write_metadata
+from nikola.utils import makedirs, req_missing, write_metadata, LocaleBorg, map_metadata
 
 
 class ThreadLocalMarkdown(threading.local):
@@ -57,8 +58,14 @@ class ThreadLocalMarkdown(threading.local):
     def convert(self, data):
         """Convert data to HTML and reset internal state."""
         result = self.markdown.convert(data)
+        try:
+            meta = {}
+            for k in self.markdown.Meta:  # This reads everything as lists
+                meta[k.lower()] = ','.join(self.markdown.Meta[k])
+        except Exception:
+            meta = {}
         self.markdown.reset()
-        return result
+        return result, meta
 
 
 class CompileMarkdown(PageCompiler):
@@ -84,6 +91,7 @@ class CompileMarkdown(PageCompiler):
         extensions.extend(site_extensions)
         if Markdown is not None:
             self.converter = ThreadLocalMarkdown(extensions)
+        self.support_metadata = 'markdown.extensions.meta' in extensions
 
     def compile_string(self, data, source_path=None, is_two_file=True, post=None, lang=None):
         """Compile Markdown into HTML strings."""
@@ -91,8 +99,9 @@ class CompileMarkdown(PageCompiler):
             req_missing(['markdown'], 'build this site (compile Markdown)')
         if not is_two_file:
             _, data = self.split_metadata(data)
-        output = self.converter.convert(data)
-        output, shortcode_deps = self.site.apply_shortcodes(output, filename=source_path, with_dependencies=True, extra_context={'post': post})
+        new_data, shortcodes = sc.extract_shortcodes(data)
+        output, _ = self.converter.convert(new_data)
+        output, shortcode_deps = self.site.apply_shortcodes_uuid(output, shortcodes, filename=source_path, with_dependencies=True, extra_context=dict(post=post))
         return output, shortcode_deps
 
     def compile(self, source, dest, is_two_file=True, post=None, lang=None):
@@ -128,7 +137,33 @@ class CompileMarkdown(PageCompiler):
             content += '\n'
         with io.open(path, "w+", encoding="utf8") as fd:
             if onefile:
-                fd.write('<!-- \n')
-                fd.write(write_metadata(metadata))
-                fd.write('-->\n\n')
+                _format = self.site.config.get('METADATA_FORMAT', 'nikola').lower()
+                if _format == 'pelican':
+                    _format = 'pelican_md'
+                data = write_metadata(metadata, _format)
+                if _format == 'nikola':
+                    data = '<!--\n' + data + '-->\n\n'
+                fd.write(data)
             fd.write(content)
+
+    def read_metadata(self, post, file_metadata_regexp=None, unslugify_titles=False, lang=None):
+        """Read the metadata from a post, and return a metadata dict."""
+        if not self.support_metadata:
+            return {}
+        if Markdown is None:
+            req_missing(['markdown'], 'build this site (compile Markdown)')
+        if lang is None:
+            lang = LocaleBorg().current_lang
+        source = post.translated_source_path(lang)
+        with io.open(source, 'r', encoding='utf-8') as inf:
+            # Note: markdown meta returns lowercase keys
+            data = inf.read()
+            # If the metadata starts with "---" it's actually YAML and
+            # we should not let markdown parse it, because it will do
+            # bad things like setting empty tags to "''"
+            if data.startswith('---\n'):
+                return {}
+            _, meta = self.converter.convert(data)
+        # Map metadata from other platforms to names Nikola expects (Issue #2817)
+        map_metadata(meta, 'markdown_metadata', self.site.config)
+        return meta

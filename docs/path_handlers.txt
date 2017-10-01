@@ -17,18 +17,11 @@ archive
     link://archive/2013 => /archives/2013/index.html
 
 archive_atom
-    Link to archive Atom path, name is the year.
+    Link to archive Atom path, name is the year (archive pages must be indexes).
     
     Example:
     
     link://archive_atom/2013 => /archives/2013/index.atom
-
-archive_rss
-    Link to archive RSS path, name is the year.
-    
-    Example:
-    
-    link://archive_rss/2013 => /archives/2013/rss.xml
 
 author
     Link to an author's page.
@@ -150,7 +143,7 @@ index_rss
     link://rss => /blog/rss.xml
 
 listing
-    A link to a listing.
+    Return a link to a listing.
     
     It will try to use the file name if it's not ambiguous, or the file path.
     
@@ -162,7 +155,7 @@ listing
     
 
 listing_source
-    A link to the source code for a listing.
+    Return a link to the source code for a listing.
     
     It will try to use the file name if it's not ambiguous, or the file path.
     
@@ -220,7 +213,7 @@ section_index_rss
     link://section_index_rss/cars => /cars/rss.xml
 
 slug
-    A link to a post with given slug, if not ambiguous.
+    Return a link to a post with given slug, if not ambiguous.
     
     Example:
     

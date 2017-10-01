@@ -74,13 +74,15 @@ SAMPLE_CONF = {
     'FEED_READ_MORE_LINK': DEFAULT_FEED_READ_MORE_LINK,
     'POSTS': """(
     ("posts/*.rst", "posts", "post.tmpl"),
+    ("posts/*.md", "posts", "post.tmpl"),
     ("posts/*.txt", "posts", "post.tmpl"),
     ("posts/*.html", "posts", "post.tmpl"),
 )""",
     'PAGES': """(
-    ("pages/*.rst", "pages", "story.tmpl"),
-    ("pages/*.txt", "pages", "story.tmpl"),
-    ("pages/*.html", "pages", "story.tmpl"),
+    ("pages/*.rst", "pages", "page.tmpl"),
+    ("pages/*.md", "pages", "page.tmpl"),
+    ("pages/*.txt", "pages", "page.tmpl"),
+    ("pages/*.html", "pages", "page.tmpl"),
 )""",
     'COMPILERS': """{
     "rest": ('.rst', '.txt'),
@@ -108,6 +110,7 @@ SAMPLE_CONF = {
     ),
 }""",
     'REDIRECTIONS': [],
+    '_METADATA_MAPPING_FORMATS': ', '.join(LEGAL_VALUES['METADATA_MAPPING'])
 }
 
 
@@ -212,7 +215,7 @@ def prepare_config(config):
     """Parse sample config with JSON."""
     p = config.copy()
     p.update({k: json.dumps(v, ensure_ascii=False) for k, v in p.items()
-             if k not in ('POSTS', 'PAGES', 'COMPILERS', 'TRANSLATIONS', 'NAVIGATION_LINKS', '_SUPPORTED_LANGUAGES', '_SUPPORTED_COMMENT_SYSTEMS', 'INDEX_READ_MORE_LINK', 'FEED_READ_MORE_LINK')})
+             if k not in ('POSTS', 'PAGES', 'COMPILERS', 'TRANSLATIONS', 'NAVIGATION_LINKS', '_SUPPORTED_LANGUAGES', '_SUPPORTED_COMMENT_SYSTEMS', 'INDEX_READ_MORE_LINK', 'FEED_READ_MORE_LINK', '_METADATA_MAPPING_FORMATS')})
     # READ_MORE_LINKs require some special treatment.
     p['INDEX_READ_MORE_LINK'] = "'" + p['INDEX_READ_MORE_LINK'].replace("'", "\\'") + "'"
     p['FEED_READ_MORE_LINK'] = "'" + p['FEED_READ_MORE_LINK'].replace("'", "\\'") + "'"

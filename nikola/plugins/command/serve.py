@@ -146,6 +146,8 @@ class CommandServe(Command):
             if options['browser']:
                 if ipv6:
                     server_url = "http://[{0}]:{1}/".format(*sa)
+                elif sa[0] == '0.0.0.0':
+                    server_url = "http://127.0.0.1:{1}/".format(*sa)
                 else:
                     server_url = "http://{0}:{1}/".format(*sa)
                 self.logger.info("Opening {0} in the default web browser...".format(server_url))
@@ -162,11 +164,11 @@ class CommandServe(Command):
                         with open(self.serve_pidfile, 'w') as fh:
                             fh.write('{0}\n'.format(pid))
                         self.logger.info("Detached with PID {0}. Run `kill {0}` or `kill $(cat nikolaserve.pid)` to stop the server.".format(pid))
-                except AttributeError as e:
+                except AttributeError:
                     if os.name == 'nt':
                         self.logger.warning("Detaching is not available on Windows, server is running in the foreground.")
                     else:
-                        raise e
+                        raise
             else:
                 self.detached = False
                 try:
@@ -203,9 +205,9 @@ class OurHTTPRequestHandler(SimpleHTTPRequestHandler):
     # Note that it might break in future versions of Python, in which case we
     # would need to do even more magic.
     def send_head(self):
-        """Common code for GET and HEAD commands.
+        """Send response code and MIME header.
 
-        This sends the response code and MIME headers.
+        This is common code for GET and HEAD commands.
 
         Return value is either a file object (which has to be copied
         to the outputfile by the caller unless the command was HEAD,
@@ -253,7 +255,7 @@ class OurHTTPRequestHandler(SimpleHTTPRequestHandler):
             # Comment out any <base> to allow local resolution of relative URLs.
             data = f.read().decode('utf8')
             f.close()
-            data = re.sub(r'<base\s([^>]*)>', '<!--base \g<1>-->', data, re.IGNORECASE)
+            data = re.sub(r'<base\s([^>]*)>', '<!--base \g<1>-->', data, flags=re.IGNORECASE)
             data = data.encode('utf8')
             f = StringIO()
             f.write(data)

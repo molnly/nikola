@@ -28,6 +28,7 @@
 
 from __future__ import print_function, unicode_literals, absolute_import
 import calendar
+import configparser
 import datetime
 import dateutil.tz
 import hashlib
@@ -69,6 +70,7 @@ try:
 except ImportError:
     husl = None
 
+from blinker import signal
 from collections import defaultdict, Callable, OrderedDict
 from logbook.compat import redirect_logging
 from logbook.more import ExceptionHandler, ColorizedStderrHandler
@@ -93,11 +95,16 @@ __all__ = ('CustomEncoder', 'get_theme_path', 'get_theme_path_real',
            'ask', 'ask_yesno', 'options2docstring', 'os_path_split',
            'get_displayed_page_number', 'adjust_name_for_index_path_list',
            'adjust_name_for_index_path', 'adjust_name_for_index_link',
-           'NikolaPygmentsHTML', 'create_redirect', 'TreeNode',
-           'clone_treenode', 'flatten_tree_structure',
-           'parse_escaped_hierarchical_category_name',
-           'join_hierarchical_category_path', 'clean_before_deployment',
-           'sort_posts', 'indent', 'load_data', 'html_unescape', 'rss_writer',)
+           'NikolaPygmentsHTML', 'create_redirect', 'clean_before_deployment',
+           'sort_posts', 'indent', 'load_data', 'html_unescape', 'rss_writer',
+           'map_metadata',
+           # Deprecated, moved to hierarchy_utils:
+           'TreeNode', 'clone_treenode', 'flatten_tree_structure',
+           'sort_classifications', 'join_hierarchical_category_path',
+           'parse_escaped_hierarchical_category_name',)
+
+from .hierarchy_utils import TreeNode, clone_treenode, flatten_tree_structure, sort_classifications
+from .hierarchy_utils import join_hierarchical_category_path, parse_escaped_hierarchical_category_name
 
 # Are you looking for 'generic_rss_renderer'?
 # It's defined in nikola.nikola.Nikola (the site object).
@@ -218,7 +225,6 @@ def req_missing(names, purpose, python=True, optional=False):
     return msg
 
 
-from nikola import filters as task_filters  # NOQA
 ENCODING = sys.getfilesystemencoding() or sys.stdin.encoding
 
 
@@ -469,9 +475,8 @@ class TemplateHookRegistry(object):
     >>> r = TemplateHookRegistry('foo', None)
     >>> r.append('Hello!')
     >>> r.append(lambda x: 'Hello ' + x + '!', False, 'world')
-    >>> str(r())  # str() call is not recommended in real use
+    >>> repr(r())
     'Hello!\nHello world!'
-    >>>
     """
 
     def __init__(self, name, site):
@@ -513,9 +518,23 @@ class TemplateHookRegistry(object):
         c = callable(inp)
         self._items.append((c, inp, wants_site_and_context, args, kwargs))
 
+    def calculate_deps(self):
+        """Calculate dependencies for a registry."""
+        deps = []
+        for is_callable, inp, wants_site_and_context, args, kwargs in self._items:
+            if not is_callable:
+                name = inp
+            elif hasattr(inp, 'template_registry_identifier'):
+                name = inp.template_registry_identifier
+            elif hasattr(inp, '__doc__'):
+                name = inp.__doc__
+            else:
+                name = '_undefined_callable_'
+            deps.append((is_callable, name, wants_site_and_context, args, kwargs))
+
     def __hash__(self):
         """Return hash of a registry."""
-        return hash(config_changed({self.name: self._items})._calc_digest())
+        return hash(config_changed({self.name: self.calculate_deps()})._calc_digest())
 
     def __str__(self):
         """Stringify a registry."""
@@ -530,7 +549,7 @@ class CustomEncoder(json.JSONEncoder):
     """Custom JSON encoder."""
 
     def default(self, obj):
-        """Default encoding handler."""
+        """Create default encoding handler."""
         try:
             return super(CustomEncoder, self).default(obj)
         except TypeError:
@@ -609,27 +628,52 @@ def get_theme_path(theme):
     return theme
 
 
+def parse_theme_meta(theme_dir):
+    """Parse a .theme meta file."""
+    cp = configparser.ConfigParser()
+    # The `or` case is in case theme_dir ends with a trailing slash
+    theme_name = os.path.basename(theme_dir) or os.path.basename(os.path.dirname(theme_dir))
+    theme_meta_path = os.path.join(theme_dir, theme_name + '.theme')
+    cp.read(theme_meta_path)
+    return cp if cp.has_section('Theme') else None
+
+
 def get_template_engine(themes):
     """Get template engine used by a given theme."""
     for theme_name in themes:
-        engine_path = os.path.join(theme_name, 'engine')
-        if os.path.isfile(engine_path):
-            with open(engine_path) as fd:
-                return fd.readlines()[0].strip()
+        meta = parse_theme_meta(theme_name)
+        if meta:
+            e = meta.get('Theme', 'engine', fallback=None)
+            if e:
+                return e
+        else:
+            # Theme still uses old-style parent/engine files
+            engine_path = os.path.join(theme_name, 'engine')
+            if os.path.isfile(engine_path):
+                with open(engine_path) as fd:
+                    return fd.readlines()[0].strip()
     # default
     return 'mako'
 
 
 def get_parent_theme_name(theme_name, themes_dirs=None):
     """Get name of parent theme."""
-    parent_path = os.path.join(theme_name, 'parent')
-    if os.path.isfile(parent_path):
-        with open(parent_path) as fd:
-            parent = fd.readlines()[0].strip()
-        if themes_dirs:
+    meta = parse_theme_meta(theme_name)
+    if meta:
+        parent = meta.get('Theme', 'parent', fallback=None)
+        if themes_dirs and parent:
             return get_theme_path_real(parent, themes_dirs)
         return parent
-    return None
+    else:
+        # Theme still uses old-style parent/engine files
+        parent_path = os.path.join(theme_name, 'parent')
+        if os.path.isfile(parent_path):
+            with open(parent_path) as fd:
+                parent = fd.readlines()[0].strip()
+            if themes_dirs:
+                return get_theme_path_real(parent, themes_dirs)
+            return parent
+        return None
 
 
 def get_theme_chain(theme, themes_dirs):
@@ -700,7 +744,7 @@ def load_messages(themes, translations, default_lang, themes_dirs):
     return messages
 
 
-def copy_tree(src, dst, link_cutoff=None):
+def copy_tree(src, dst, link_cutoff=None, ignored_filenames=None):
     """Copy a src tree to the dst folder.
 
     Example:
@@ -711,11 +755,13 @@ def copy_tree(src, dst, link_cutoff=None):
     should copy "themes/defauts/assets/foo/bar" to
     "output/assets/foo/bar"
 
-    if link_cutoff is set, then the links pointing at things
+    If link_cutoff is set, then the links pointing at things
     *inside* that folder will stay as links, and links
     pointing *outside* that folder will be copied.
+
+    ignored_filenames is a set of file names that will be ignored.
     """
-    ignore = set(['.svn'])
+    ignore = set(['.svn', '.git']) | (ignored_filenames or set())
     base_len = len(src.split(os.sep))
     for root, dirs, files in os.walk(src, followlinks=True):
         root_parts = root.split(os.sep)
@@ -769,8 +815,8 @@ def remove_file(source):
 # slugify is adopted from
 # http://code.activestate.com/recipes/
 # 577257-slugify-make-a-string-usable-in-a-url-or-filename/
-_slugify_strip_re = re.compile(r'[^+\w\s-]')
-_slugify_hyphenate_re = re.compile(r'[-\s]+')
+_slugify_strip_re = re.compile(r'[^+\w\s-]', re.UNICODE)
+_slugify_hyphenate_re = re.compile(r'[-\s]+', re.UNICODE)
 
 
 def slugify(value, lang=None, force=False):
@@ -795,8 +841,8 @@ def slugify(value, lang=None, force=False):
         # This is the standard state of slugify, which actually does some work.
         # It is the preferred style, especially for Western languages.
         value = unicode_str(unidecode(value))
-        value = _slugify_strip_re.sub('', value, re.UNICODE).strip().lower()
-        return _slugify_hyphenate_re.sub('-', value, re.UNICODE)
+        value = _slugify_strip_re.sub('', value).strip().lower()
+        return _slugify_hyphenate_re.sub('-', value)
     else:
         # This is the “disarmed” state of slugify, which lets the user
         # have any character they please (be it regular ASCII with spaces,
@@ -903,6 +949,9 @@ def current_time(tzinfo=None):
     return dt
 
 
+from nikola import filters as task_filters  # NOQA
+
+
 def apply_filters(task, filters, skip_ext=None):
     """Apply filters to a task.
 
@@ -954,26 +1003,26 @@ def get_crumbs(path, is_file=False, index_folder=None, lang=None):
     >>> crumbs = get_crumbs('galleries')
     >>> len(crumbs)
     1
-    >>> print('|'.join(crumbs[0]))
-    #|galleries
+    >>> crumbs[0]
+    ['#', 'galleries']
 
     >>> crumbs = get_crumbs(os.path.join('galleries','demo'))
     >>> len(crumbs)
     2
-    >>> print('|'.join(crumbs[0]))
-    ..|galleries
-    >>> print('|'.join(crumbs[1]))
-    #|demo
+    >>> crumbs[0]
+    ['..', 'galleries']
+    >>> crumbs[1]
+    ['#', 'demo']
 
     >>> crumbs = get_crumbs(os.path.join('listings','foo','bar'), is_file=True)
     >>> len(crumbs)
     3
-    >>> print('|'.join(crumbs[0]))
-    ..|listings
-    >>> print('|'.join(crumbs[1]))
-    .|foo
-    >>> print('|'.join(crumbs[2]))
-    #|bar
+    >>> crumbs[0]
+    ['..', 'listings']
+    >>> crumbs[1]
+    ['.', 'foo']
+    >>> crumbs[2]
+    ['#', 'bar']
     """
     crumbs = path.split(os.sep)
     _crumbs = []
@@ -1414,24 +1463,50 @@ def get_translation_candidate(config, path, lang):
             return config['TRANSLATIONS_PATTERN'].format(path=p, ext=e, lang=lang)
 
 
-def write_metadata(data):
+def write_metadata(data, _format='nikola'):
     """Write metadata."""
-    order = ('title', 'slug', 'date', 'tags', 'category', 'link', 'description', 'type')
-    f = '.. {0}: {1}'
-    meta = []
-    for k in order:
-        try:
-            meta.append(f.format(k, data.pop(k)))
-        except KeyError:
-            pass
+    _format = _format.lower()
+    if _format not in ['nikola', 'yaml', 'toml', 'pelican_rest', 'pelican_md']:
+        LOGGER.warn('Unknown METADATA_FORMAT %s, using "nikola" format', _format)
 
-    # Leftover metadata (user-specified/non-default).
-    for k in natsort.natsorted(list(data.keys()), alg=natsort.ns.F | natsort.ns.IC):
-        meta.append(f.format(k, data[k]))
+    if _format == 'yaml':
+        if yaml is None:
+            req_missing('pyyaml', 'use YAML metadata', optional=False)
+        return '\n'.join(('---', yaml.safe_dump(data, default_flow_style=False).strip(), '---', '', ''))
 
-    meta.append('')
+    elif _format == 'toml':
+        if toml is None:
+            req_missing('toml', 'use TOML metadata', optional=False)
+        return '\n'.join(('+++', toml.dumps(data).strip(), '+++', '', ''))
 
-    return '\n'.join(meta)
+    elif _format == 'pelican_rest':
+        title = data.pop('title')
+        results = [
+            '=' * len(title),
+            title,
+            '=' * len(title),
+            ''
+        ] + [':{0}: {1}'.format(k, v) for k, v in data.items() if v] + ['']
+        return '\n'.join(results)
+
+    elif _format == 'pelican_md':
+        results = ['{0}: {1}'.format(k, v) for k, v in data.items() if v] + ['', '']
+        return '\n'.join(results)
+
+    else:  # Nikola, default
+        order = ('title', 'slug', 'date', 'tags', 'category', 'link', 'description', 'type')
+        f = '.. {0}: {1}'
+        meta = []
+        for k in order:
+            try:
+                meta.append(f.format(k, data.pop(k)))
+            except KeyError:
+                pass
+        # Leftover metadata (user-specified/non-default).
+        for k in natsort.natsorted(list(data.keys()), alg=natsort.ns.F | natsort.ns.IC):
+            meta.append(f.format(k, data[k]))
+        meta.append('')
+        return '\n'.join(meta)
 
 
 def ask(query, default=None):
@@ -1672,7 +1747,7 @@ def adjust_name_for_index_link(name, i, displayed_i, lang, site, force_addition=
 
 
 def create_redirect(src, dst):
-    """"Create a redirection."""
+    """Create a redirection."""
     makedirs(os.path.dirname(src))
     with io.open(src, "w+", encoding="utf8") as fd:
         fd.write('<!DOCTYPE html>\n<head>\n<meta charset="utf-8">\n'
@@ -1680,182 +1755,6 @@ def create_redirect(src, dst):
                  'content="noindex">\n<meta http-equiv="refresh" content="0; '
                  'url={0}">\n</head>\n<body>\n<p>Page moved '
                  '<a href="{0}">here</a>.</p>\n</body>'.format(dst))
-
-
-class TreeNode(object):
-    """A tree node."""
-
-    indent_levels = None  # use for formatting comments as tree
-    indent_change_before = 0  # use for formatting comments as tree
-    indent_change_after = 0  # use for formatting comments as tree
-
-    # The indent levels and changes allow to render a tree structure
-    # without keeping track of all that information during rendering.
-    #
-    # The indent_change_before is the different between the current
-    # comment's level and the previous comment's level; if the number
-    # is positive, the current level is indented further in, and if it
-    # is negative, it is indented further out. Positive values can be
-    # used to open HTML tags for each opened level.
-    #
-    # The indent_change_after is the difference between the next
-    # comment's level and the current comment's level. Negative values
-    # can be used to close HTML tags for each closed level.
-    #
-    # The indent_levels list contains one entry (index, count) per
-    # level, informing about the index of the current comment on that
-    # level and the count of comments on that level (before a comment
-    # of a higher level comes). This information can be used to render
-    # tree indicators, for example to generate a tree such as:
-    #
-    # +--- [(0,3)]
-    # +-+- [(1,3)]
-    # | +--- [(1,3), (0,2)]
-    # | +-+- [(1,3), (1,2)]
-    # |   +--- [(1,3), (1,2), (0, 1)]
-    # +-+- [(2,3)]
-    #   +- [(2,3), (0,1)]
-    #
-    # (The lists used as labels represent the content of the
-    # indent_levels property for that node.)
-
-    def __init__(self, name, parent=None):
-        """Initialize node."""
-        self.name = name
-        self.parent = parent
-        self.children = []
-
-    def get_path(self):
-        """Get path."""
-        path = []
-        curr = self
-        while curr is not None:
-            path.append(curr)
-            curr = curr.parent
-        return reversed(path)
-
-    def get_children(self):
-        """Get children of a node."""
-        return self.children
-
-    def __str__(self):
-        """Stringify node (return name)."""
-        return self.name
-
-    def _repr_partial(self):
-        """Return partial representation."""
-        if self.parent:
-            return "{0}/{1!r}".format(self.parent._repr_partial(), self.name)
-        else:
-            return repr(self.name)
-
-    def __repr__(self):
-        """Return programmer-friendly node representation."""
-        return "<TreeNode {0}>".format(self._repr_partial())
-
-
-def clone_treenode(treenode, parent=None, acceptor=lambda x: True):
-    """Clone a TreeNode.
-
-    Children are only cloned if `acceptor` returns `True` when
-    applied on them.
-
-    Returns the cloned node if it has children or if `acceptor`
-    applied to it returns `True`. In case neither applies, `None`
-    is returned.
-    """
-    # Copy standard TreeNode stuff
-    node_clone = TreeNode(treenode.name, parent)
-    node_clone.children = [clone_treenode(node, parent=node_clone, acceptor=acceptor) for node in treenode.children]
-    node_clone.children = [node for node in node_clone.children if node]
-    node_clone.indent_levels = treenode.indent_levels
-    node_clone.indent_change_before = treenode.indent_change_before
-    node_clone.indent_change_after = treenode.indent_change_after
-    if hasattr(treenode, 'classification_path'):
-        # Copy stuff added by taxonomies_classifier plugin
-        node_clone.classification_path = treenode.classification_path
-        node_clone.classification_name = treenode.classification_name
-
-    # Accept this node if there are no children (left) and acceptor fails
-    if not node_clone.children and not acceptor(treenode):
-        return None
-    return node_clone
-
-
-def flatten_tree_structure(root_list):
-    """Flatten a tree."""
-    elements = []
-
-    def generate(input_list, indent_levels_so_far):
-        for index, element in enumerate(input_list):
-            # add to destination
-            elements.append(element)
-            # compute and set indent levels
-            indent_levels = indent_levels_so_far + [(index, len(input_list))]
-            element.indent_levels = indent_levels
-            # add children
-            children = element.get_children()
-            element.children_count = len(children)
-            generate(children, indent_levels)
-
-    generate(root_list, [])
-    # Add indent change counters
-    level = 0
-    last_element = None
-    for element in elements:
-        new_level = len(element.indent_levels)
-        # Compute level change before this element
-        change = new_level - level
-        if last_element is not None:
-            last_element.indent_change_after = change
-        element.indent_change_before = change
-        # Update variables
-        level = new_level
-        last_element = element
-    # Set level change after last element
-    if last_element is not None:
-        last_element.indent_change_after = -level
-    return elements
-
-
-def parse_escaped_hierarchical_category_name(category_name):
-    """Parse a category name."""
-    result = []
-    current = None
-    index = 0
-    next_backslash = category_name.find('\\', index)
-    next_slash = category_name.find('/', index)
-    while index < len(category_name):
-        if next_backslash == -1 and next_slash == -1:
-            current = (current if current else "") + category_name[index:]
-            index = len(category_name)
-        elif next_slash >= 0 and (next_backslash == -1 or next_backslash > next_slash):
-            result.append((current if current else "") + category_name[index:next_slash])
-            current = ''
-            index = next_slash + 1
-            next_slash = category_name.find('/', index)
-        else:
-            if len(category_name) == next_backslash + 1:
-                raise Exception("Unexpected '\\' in '{0}' at last position!".format(category_name))
-            esc_ch = category_name[next_backslash + 1]
-            if esc_ch not in {'/', '\\'}:
-                raise Exception("Unknown escape sequence '\\{0}' in '{1}'!".format(esc_ch, category_name))
-            current = (current if current else "") + category_name[index:next_backslash] + esc_ch
-            index = next_backslash + 2
-            next_backslash = category_name.find('\\', index)
-            if esc_ch == '/':
-                next_slash = category_name.find('/', index)
-    if current is not None:
-        result.append(current)
-    return result
-
-
-def join_hierarchical_category_path(category_path):
-    """Join a category path."""
-    def escape(s):
-        return s.replace('\\', '\\\\').replace('/', '\\/')
-
-    return '/'.join([escape(p) for p in category_path])
 
 
 def colorize_str_from_base_color(string, base_color):
@@ -2009,8 +1908,10 @@ def load_data(path):
     """Given path to a file, load data from it."""
     ext = os.path.splitext(path)[-1]
     loader = None
+    function = 'load'
     if ext in {'.yml', '.yaml'}:
         loader = yaml
+        function = 'safe_load'
         if yaml is None:
             req_missing(['yaml'], 'use YAML data files')
             return {}
@@ -2024,7 +1925,7 @@ def load_data(path):
     if loader is None:
         return
     with io.open(path, 'r', encoding='utf8') as inf:
-        return loader.load(inf)
+        return getattr(loader, function)(inf)
 
 
 # see http://stackoverflow.com/a/2087433
@@ -2033,12 +1934,12 @@ try:
     html_unescape = html.unescape
 except (AttributeError, ImportError):
     try:
-        from HTMLParser import HTMLParser  # Python 2.6 and 2.7
+        from HTMLParser import HTMLParser  # Python 2.7
     except ImportError:
         from html.parser import HTMLParser  # Python 3 (up to 3.4)
 
     def html_unescape(s):
-        """Convert all named and numeric character references  in the string s to the corresponding unicode characters."""
+        """Convert all named and numeric character references in the string s to the corresponding unicode characters."""
         h = HTMLParser()
         return h.unescape(s)
 
@@ -2052,3 +1953,124 @@ def rss_writer(rss_obj, output_path):
         if isinstance(data, bytes_str):
             data = data.decode('utf-8')
         rss_file.write(data)
+
+
+def map_metadata(meta, key, config):
+    """Map metadata from other platforms to Nikola names.
+
+    This uses the METADATA_MAPPING setting (via ``config``) and modifies the dict in place.
+    """
+    for foreign, ours in config.get('METADATA_MAPPING', {}).get(key, {}).items():
+        if foreign in meta:
+            meta[ours] = meta[foreign]
+
+
+class ClassificationTranslationManager(object):
+    """Keeps track of which classifications could be translated as which others.
+
+    The internal structure is as follows:
+    - per language, you have a map of classifications to maps
+    - the inner map is a map from other languages to sets of classifications
+      which are considered as translations
+    """
+
+    def __init__(self):
+        self._data = defaultdict(dict)
+
+    def add_translation(self, translation_map):
+        """Add translation of one classification.
+
+        ``translation_map`` must be a dictionary mapping languages to their
+        translations of the added classification.
+        """
+        for lang, classification in translation_map.items():
+            clmap = self._data[lang]
+            cldata = clmap.get(classification)
+            if cldata is None:
+                cldata = defaultdict(set)
+                clmap[classification] = cldata
+            for other_lang, other_classification in translation_map.items():
+                if other_lang != lang:
+                    cldata[other_lang].add(other_classification)
+
+    def get_translations(self, classification, lang):
+        """Get a dict mapping other languages to (unsorted) lists of translated classifications."""
+        clmap = self._data[lang]
+        cldata = clmap.get(classification)
+        if cldata is None:
+            return {}
+        else:
+            return {other_lang: list(classifications) for other_lang, classifications in cldata.items()}
+
+    def get_translations_as_list(self, classification, lang, classifications_per_language):
+        """Get a list of pairs ``(other_lang, other_classification)`` which are translations of ``classification``.
+
+        Avoid classifications not in ``classifications_per_language``.
+        """
+        clmap = self._data[lang]
+        cldata = clmap.get(classification)
+        if cldata is None:
+            return []
+        else:
+            result = []
+            for other_lang, classifications in cldata.items():
+                for other_classification in classifications:
+                    if other_classification in classifications_per_language[other_lang]:
+                        result.append((other_lang, other_classification))
+            return result
+
+    def has_translations(self, classification, lang):
+        """Return whether we know about the classification in that language.
+
+        Note that this function returning ``True`` does not mean that
+        ``get_translations`` returns a non-empty dict or that
+        ``get_translations_as_list`` returns a non-empty list, but only
+        that this classification was explicitly added with
+        ``add_translation`` at some point.
+        """
+        return self._data[lang].get(classification) is not None
+
+    def add_defaults(self, posts_per_classification_per_language):
+        """Treat every classification as its own literal translation into every other language.
+
+        ``posts_per_classification_per_language`` should be the first argument
+        to ``Taxonomy.postprocess_posts_per_classification``.
+        """
+        # First collect all classifications from all languages
+        all_classifications = set()
+        for _, classifications in posts_per_classification_per_language.items():
+            all_classifications.update(classifications.keys())
+        # Next, add translation records for all of them
+        for classification in all_classifications:
+            record = {tlang: classification for tlang in posts_per_classification_per_language}
+            self.add_translation(record)
+
+    def read_from_config(self, site, basename, posts_per_classification_per_language, add_defaults_default):
+        """Read translations from config.
+
+        ``site`` should be the Nikola site object. Will consider
+        the variables ``<basename>_TRANSLATIONS`` and
+        ``<basename>_TRANSLATIONS_ADD_DEFAULTS``.
+
+        ``posts_per_classification_per_language`` should be the first argument
+        to ``Taxonomy.postprocess_posts_per_classification``, i.e. this function
+        should be called from that function. ``add_defaults_default`` specifies
+        what the default value for ``<basename>_TRANSLATIONS_ADD_DEFAULTS`` is.
+
+        Also sends signal via blinker to allow interested plugins to add
+        translations by themselves. The signal name used is
+        ``<lower(basename)>_translations_config``, and the argument is a dict
+        with entries ``translation_manager``, ``site`` and
+        ``posts_per_classification_per_language``.
+        """
+        # Add translations
+        for record in site.config.get('{}_TRANSLATIONS'.format(basename), []):
+            self.add_translation(record)
+        # Add default translations
+        if site.config.get('{}_TRANSLATIONS_ADD_DEFAULTS'.format(basename), add_defaults_default):
+            self.add_defaults(posts_per_classification_per_language)
+        # Use blinker to inform interested parties (plugins) that they can add
+        # translations themselves
+        args = {'translation_manager': self, 'site': site,
+                'posts_per_classification_per_language': posts_per_classification_per_language}
+        signal('{}_translations_config'.format(basename.lower())).send(args)

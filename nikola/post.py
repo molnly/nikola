@@ -51,6 +51,14 @@ try:
     import pyphen
 except ImportError:
     pyphen = None
+try:
+    import toml
+except ImportError:
+    toml = None
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 from math import ceil  # for reading time feature
 
@@ -67,6 +75,7 @@ from .utils import (
     demote_headers,
     get_translation_candidate,
     unslugify,
+    map_metadata
 )
 
 __all__ = ('Post',)
@@ -145,15 +154,17 @@ class Post(object):
         self._dependency_uptodate_page = defaultdict(list)
         self._depfile = defaultdict(list)
 
+        # Load internationalized metadata
+        for lang in self.translations:
+            if os.path.isfile(get_translation_candidate(self.config, self.source_path, lang)):
+                self.translated_to.add(lang)
+
         default_metadata, self.newstylemeta = get_meta(self, self.config['FILE_METADATA_REGEXP'], self.config['UNSLUGIFY_TITLES'])
 
         self.meta = Functionary(lambda: None, self.default_lang)
         self.meta[self.default_lang] = default_metadata
 
-        # Load internationalized metadata
         for lang in self.translations:
-            if os.path.isfile(get_translation_candidate(self.config, self.source_path, lang)):
-                self.translated_to.add(lang)
             if lang != self.default_lang:
                 meta = defaultdict(lambda: '')
                 meta.update(default_metadata)
@@ -198,7 +209,12 @@ class Post(object):
         try:
             self.date = to_datetime(self.meta[self.default_lang]['date'], tzinfo)
         except ValueError:
-            raise ValueError("Invalid date '{0}' in file {1}".format(self.meta[self.default_lang]['date'], source_path))
+            if not self.meta[self.default_lang]['date']:
+                msg = 'Missing date in file {}'.format(source_path)
+            else:
+                msg = "Invalid date '{0}' in file {1}".format(self.meta[self.default_lang]['date'], source_path)
+            LOGGER.error(msg)
+            raise ValueError(msg)
 
         if 'updated' not in default_metadata:
             default_metadata['updated'] = default_metadata.get('date', None)
@@ -223,8 +239,12 @@ class Post(object):
         is_private = False
         self._tags = {}
         for lang in self.translated_to:
+            if isinstance(self.meta[lang]['tags'], (list, tuple, set)):
+                _tag_list = self.meta[lang]['tags']
+            else:
+                _tag_list = self.meta[lang]['tags'].split(',')
             self._tags[lang] = natsort.natsorted(
-                list(set([x.strip() for x in self.meta[lang]['tags'].split(',')])),
+                list(set([x.strip() for x in _tag_list])),
                 alg=natsort.ns.F | natsort.ns.IC)
             self._tags[lang] = [t for t in self._tags[lang] if t]
             if 'draft' in [_.lower() for _ in self._tags[lang]]:
@@ -279,7 +299,8 @@ class Post(object):
         m.update(utils.unicode_str(json.dumps(clean_meta, cls=utils.CustomEncoder, sort_keys=True)).encode('utf-8'))
         return '<Post: {0!r} {1}>'.format(self.source_path, m.hexdigest())
 
-    def _has_pretty_url(self, lang):
+    def has_pretty_url(self, lang):
+        """Check if this page has a pretty URL."""
         m = self.meta[lang].get('pretty_url', '')
         if m:
             # match is a non-empty string, overides anything
@@ -288,9 +309,13 @@ class Post(object):
             # use PRETTY_URLS, unless the slug is 'index'
             return self.pretty_urls and self.meta[lang]['slug'] != 'index'
 
+    def _has_pretty_url(self, lang):
+        """Check if this page has a pretty URL."""
+        return self.has_pretty_url(lang)
+
     @property
     def is_mathjax(self):
-        """True if this post has the mathjax tag in the current language or is a python notebook."""
+        """Return True if this post has the mathjax tag in the current language or is a python notebook."""
         if self.compiler.name == 'ipynb':
             return True
         lang = nikola.utils.LocaleBorg().current_lang
@@ -660,7 +685,7 @@ class Post(object):
             if str(e) == "Document is empty":
                 return ""
             # let other errors raise
-            raise(e)
+            raise
         base_url = self.permalink(lang=lang)
         document.make_links_absolute(base_url)
 
@@ -689,7 +714,8 @@ class Post(object):
                         reading_time=self.reading_time,
                         remaining_reading_time=self.remaining_reading_time,
                         paragraph_count=self.paragraph_count,
-                        remaining_paragraph_count=self.remaining_paragraph_count)
+                        remaining_paragraph_count=self.remaining_paragraph_count,
+                        post_title=self.title(lang))
                 # This closes all open tags and sanitizes the broken HTML
                 document = lxml.html.fromstring(teaser)
                 try:
@@ -718,7 +744,7 @@ class Post(object):
 
     @property
     def reading_time(self):
-        """Reading time based on length of text."""
+        """Return reading time based on length of text."""
         if self._reading_time is None:
             text = self.text(strip_html=True)
             words_per_minute = 220
@@ -757,7 +783,7 @@ class Post(object):
                 if str(e) == "Document is empty":
                     return ""
                 # let other errors raise
-                raise(e)
+                raise
 
             # output is a float, for no real reason at all
             self._paragraph_count = int(document.xpath('count(//p)'))
@@ -775,7 +801,7 @@ class Post(object):
                 if str(e) == "Document is empty":
                     return ""
                 # let other errors raise
-                raise(e)
+                raise
 
             self._remaining_paragraph_count = self.paragraph_count - int(document.xpath('count(//p)'))
         return self._remaining_paragraph_count
@@ -796,7 +822,7 @@ class Post(object):
         if lang is None:
             lang = nikola.utils.LocaleBorg().current_lang
         folder = self.folders[lang]
-        if self._has_pretty_url(lang):
+        if self.has_pretty_url(lang):
             path = os.path.join(self.translations[lang],
                                 folder, self.meta[lang]['slug'], 'index' + extension)
         else:
@@ -874,7 +900,7 @@ class Post(object):
 
         pieces = self.translations[lang].split(os.sep)
         pieces += self.folders[lang].split(os.sep)
-        if self._has_pretty_url(lang):
+        if self.has_pretty_url(lang):
             pieces += [self.meta[lang]['slug'], 'index' + extension]
         else:
             pieces += [self.meta[lang]['slug'] + extension]
@@ -968,9 +994,11 @@ def get_metadata_from_file(source_path, config=None, lang=None):
             source_path += '.' + lang
         with io.open(source_path, "r", encoding="utf-8-sig") as meta_file:
             meta_data = [x.strip() for x in meta_file.readlines()]
-        return _get_metadata_from_file(meta_data)
+        return _get_metadata_from_file(meta_data, config)
     except (UnicodeDecodeError, UnicodeEncodeError):
-        raise ValueError('Error reading {0}: Nikola only supports UTF-8 files'.format(source_path))
+        msg = 'Error reading {0}: Nikola only supports UTF-8 files'.format(source_path)
+        LOGGER.error(msg)
+        raise ValueError(msg)
     except Exception:  # The file may not exist, for multilingual sites
         return {}
 
@@ -982,25 +1010,7 @@ re_rst_title = re.compile(r'^([{0}]{{4,}})'.format(re.escape(
     string.punctuation)))
 
 
-def _get_title_from_contents(meta_data):
-    """Extract title from file contents, LAST RESOURCE."""
-    piece = meta_data[:]
-    title = None
-    for i, line in enumerate(piece):
-        if re_rst_title.findall(line) and i > 0:
-            title = meta_data[i - 1].strip()
-            break
-        if (re_rst_title.findall(line) and i >= 0 and
-                re_rst_title.findall(meta_data[i + 2])):
-            title = meta_data[i + 1].strip()
-            break
-        if re_md_title.findall(line):
-            title = re_md_title.findall(line)[0]
-            break
-    return title
-
-
-def _get_metadata_from_file(meta_data):
+def _get_metadata_from_file(meta_data, config=None):
     """Extract metadata from a post's source file."""
     meta = {}
     if not meta_data:
@@ -1009,6 +1019,32 @@ def _get_metadata_from_file(meta_data):
     # Skip up to one empty line at the beginning (for txt2tags)
     if not meta_data[0]:
         meta_data = meta_data[1:]
+
+    # If 1st line is '---', then it's YAML metadata
+    if meta_data[0] == '---':
+        if yaml is None:
+            utils.req_missing('pyyaml', 'use YAML metadata', optional=True)
+            raise ValueError('Error parsing metadata')
+        idx = meta_data.index('---', 1)
+        meta = yaml.safe_load('\n'.join(meta_data[1:idx]))
+        # We expect empty metadata to be '', not None
+        for k in meta:
+            if meta[k] is None:
+                meta[k] = ''
+        # Map metadata from other platforms to names Nikola expects (Issue #2817)
+        map_metadata(meta, 'yaml', config)
+        return meta
+
+    # If 1st line is '+++', then it's TOML metadata
+    if meta_data[0] == '+++':
+        if toml is None:
+            utils.req_missing('toml', 'use TOML metadata', optional=True)
+            raise ValueError('Error parsing metadata')
+        idx = meta_data.index('+++', 1)
+        meta = toml.loads('\n'.join(meta_data[1:idx]))
+        # Map metadata from other platforms to names Nikola expects (Issue #2817)
+        map_metadata(meta, 'toml', config)
+        return meta
 
     # First, get metadata from the beginning of the file,
     # up to first empty line
@@ -1019,12 +1055,6 @@ def _get_metadata_from_file(meta_data):
         match = re_meta(line)
         if match[0]:
             meta[match[0]] = match[1]
-
-    # If we have no title, try to get it from document
-    if 'title' not in meta:
-        t = _get_title_from_contents(meta_data)
-        if t is not None:
-            meta['title'] = t
 
     return meta
 
@@ -1096,8 +1126,8 @@ def get_meta(post, file_metadata_regexp=None, unslugify_titles=False, lang=None)
 
     If ``file_metadata_regexp`` is given it will be tried to read
     metadata from the filename.
-    If ``unslugify_titles`` is True, the extracted title (if any) will be unslugified, as is done in galleries.
-    If any metadata is then found inside the file the metadata from the
+    If ``unslugify_titles`` is True, the extracted title (if any) will be unslugified, as is
+    done in galleries. If any metadata is then found inside the file the metadata from the
     file will override previous findings.
     """
     meta = defaultdict(lambda: '')
@@ -1171,7 +1201,8 @@ def hyphenate(dom, _lang):
                 skippable_nodes = ['kbd', 'code', 'samp', 'mark', 'math', 'data', 'ruby', 'svg']
                 if node.getchildren():
                     for child in node.getchildren():
-                        if child.tag in skippable_nodes or (child.tag == 'span' and 'math' in child.get('class', [])):
+                        if child.tag in skippable_nodes or (child.tag == 'span' and 'math'
+                                                            in child.get('class', [])):
                             skip_node = True
                 elif 'math' in node.get('class', []):
                     skip_node = True

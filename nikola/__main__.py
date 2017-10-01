@@ -27,32 +27,37 @@
 """The main function of Nikola."""
 
 from __future__ import print_function, unicode_literals
-from collections import defaultdict
+
 import os
 import shutil
+import sys
+import traceback
+from collections import defaultdict
+
+from blinker import signal
+from doit.cmd_auto import Auto as DoitAuto
+from doit.cmd_base import TaskLoader
+from doit.cmd_clean import Clean as DoitClean
+from doit.cmd_completion import TabCompletion
+from doit.cmd_help import Help as DoitHelp
+from doit.cmd_run import Run as DoitRun
+from doit.doit_cmd import DoitMain
+from doit.loader import generate_tasks
+from doit.reporter import ExecutedOnlyReporter
+from logbook import NullHandler
+
+from . import __version__
+from .nikola import Nikola
+from .plugin_categories import Command
+from .utils import (LOGGER, STDERR_HANDLER, STRICT_HANDLER,
+                    ColorfulStderrHandler, get_root_dir, req_missing,
+                    sys_decode, sys_encode)
+
 try:
     import readline  # NOQA
 except ImportError:
     pass  # This is only so raw_input/input does nicer things if it's available
-import sys
-import traceback
 
-from doit.loader import generate_tasks
-from doit.cmd_base import TaskLoader
-from doit.reporter import ExecutedOnlyReporter
-from doit.doit_cmd import DoitMain
-from doit.cmd_help import Help as DoitHelp
-from doit.cmd_run import Run as DoitRun
-from doit.cmd_clean import Clean as DoitClean
-from doit.cmd_completion import TabCompletion
-from doit.cmd_auto import Auto as DoitAuto
-from logbook import NullHandler
-from blinker import signal
-
-from . import __version__
-from .plugin_categories import Command
-from .nikola import Nikola
-from .utils import sys_decode, sys_encode, get_root_dir, req_missing, LOGGER, STRICT_HANDLER, STDERR_HANDLER, ColorfulStderrHandler
 
 if sys.version_info[0] == 3:
     import importlib.machinery
@@ -275,13 +280,20 @@ class NikolaTaskLoader(TaskLoader):
             }
         DOIT_CONFIG['default_tasks'] = ['render_site', 'post_render']
         DOIT_CONFIG.update(self.nikola._doit_config)
-        tasks = generate_tasks(
-            'render_site',
-            self.nikola.gen_tasks('render_site', "Task", 'Group of tasks to render the site.'))
-        latetasks = generate_tasks(
-            'post_render',
-            self.nikola.gen_tasks('post_render', "LateTask", 'Group of tasks to be executed after site is rendered.'))
-        signal('initialized').send(self.nikola)
+        try:
+            tasks = generate_tasks(
+                'render_site',
+                self.nikola.gen_tasks('render_site', "Task", 'Group of tasks to render the site.'))
+            latetasks = generate_tasks(
+                'post_render',
+                self.nikola.gen_tasks('post_render', "LateTask", 'Group of tasks to be executed after site is rendered.'))
+            signal('initialized').send(self.nikola)
+        except Exception:
+            LOGGER.error('Error loading tasks. An unhandled exception occurred.')
+            if self.nikola.debug:
+                raise
+            _print_exception()
+            sys.exit(3)
         return tasks + latetasks, DOIT_CONFIG
 
 
@@ -363,7 +375,14 @@ class DoitNikola(DoitMain):
                 LOGGER.error("This command needs to run inside an "
                              "existing Nikola site.")
                 return 3
-        return super(DoitNikola, self).run(cmd_args)
+        try:
+            return super(DoitNikola, self).run(cmd_args)
+        except Exception:
+            LOGGER.error('An unhandled exception occurred.')
+            if self.nikola.debug:
+                raise
+            _print_exception()
+            return 1
 
     @staticmethod
     def print_version():
@@ -397,6 +416,13 @@ def levenshtein(s1, s2):
         previous_row = current_row
 
     return previous_row[-1]
+
+
+def _print_exception():
+    """Print an exception in a friendlier, shorter style."""
+    etype, evalue, _ = sys.exc_info()
+    LOGGER.error(''.join(traceback.format_exception(etype, evalue, None, limit=0, chain=False)).strip())
+    LOGGER.notice("To see more details, run Nikola in debug mode (set environment variable NIKOLA_DEBUG=1)")
 
 
 if __name__ == "__main__":

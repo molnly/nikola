@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-import os
 import sys
 
 
@@ -34,6 +33,9 @@ class TestHarcodedFallbacks(unittest.TestCase):
         if sys.platform == 'win32':
             self.assertTrue(nikola.nikola.is_valid_locale(str('English')))
             self.assertTrue(nikola.nikola.is_valid_locale(str('C')))
+        elif sys.platform == 'darwin':
+            self.assertTrue(nikola.nikola.is_valid_locale(str('en_US.UTF-8')))
+            self.assertTrue(nikola.nikola.is_valid_locale(str('C')))
         else:
             # the 1st is desired in Travis, not a problem if fails in user host
             self.assertTrue(nikola.nikola.is_valid_locale(str('en_US.utf8')))
@@ -55,7 +57,7 @@ class TestConfigLocale(unittest.TestCase):
         locale_fallback = loc_22
         sanitized_fallback = nikola.nikola.valid_locale_fallback(
             desired_locale=locale_fallback)
-        self.assertEquals(sanitized_fallback, locale_fallback)
+        self.assertEqual(sanitized_fallback, locale_fallback)
 
     def test_explicit_bad_fallback(self):
         locale_fallback = str('xyz')
@@ -75,8 +77,8 @@ class TestConfigLocale(unittest.TestCase):
             locale_default,
             LOCALES,
             translations)
-        self.assertEquals(fallback, locale_fallback)
-        self.assertEquals(default, locale_default)
+        self.assertEqual(fallback, locale_fallback)
+        self.assertEqual(default, locale_default)
 
     def test_explicit_bad_default(self):
         locale_fallback, locale_default, LOCALES, translations = (
@@ -90,8 +92,8 @@ class TestConfigLocale(unittest.TestCase):
             locale_default,
             LOCALES,
             translations)
-        self.assertEquals(fallback, locale_fallback)
-        self.assertEquals(default, fallback)
+        self.assertEqual(fallback, locale_fallback)
+        self.assertEqual(default, fallback)
 
     def test_extra_locales_deleted(self):
         locale_fallback, locale_default, LOCALES, translations = (
@@ -119,7 +121,7 @@ class TestConfigLocale(unittest.TestCase):
             locale_default,
             LOCALES,
             translations)
-        self.assertEquals(locales[lang_11], str(LOCALES[lang_11]))
+        self.assertEqual(locales[lang_11], str(LOCALES[lang_11]))
 
     def test_explicit_bad_locale_replaced_with_fallback(self):
         locale_fallback, locale_default, LOCALES, translations = (
@@ -133,7 +135,7 @@ class TestConfigLocale(unittest.TestCase):
             locale_default,
             LOCALES,
             translations)
-        self.assertEquals(locales['en'], locale_fallback)
+        self.assertEqual(locales['en'], locale_fallback)
 
     def test_impicit_locale_when_default_locale_defined(self):
         locale_fallback, locale_default, LOCALES, translations = (
@@ -147,7 +149,7 @@ class TestConfigLocale(unittest.TestCase):
             locale_default,
             LOCALES,
             translations)
-        self.assertEquals(locales['en'], locale_default)
+        self.assertEqual(locales['en'], locale_default)
 
     def test_impicit_locale_when_default_locale_is_not_defined(self):
         # legacy mode, compat v6.0.4 : guess locale from lang
@@ -167,7 +169,7 @@ class TestConfigLocale(unittest.TestCase):
         else:
             guess_locale_for_lang = nikola.nikola.guess_locale_from_lang_posix
 
-        self.assertEquals(locales[lang_11], guess_locale_for_lang(lang_11))
+        self.assertEqual(locales[lang_11], guess_locale_for_lang(lang_11))
 
 
 class TestCalendarRelated(unittest.TestCase):
@@ -194,7 +196,7 @@ class TestLocaleBorg(unittest.TestCase):
         locales = {lang_11: loc_11, lang_22: loc_22}
         initial_lang = lang_22
         nikola.utils.LocaleBorg.initialize(locales, initial_lang)
-        self.assertEquals(initial_lang, nikola.utils.LocaleBorg().current_lang)
+        self.assertEqual(initial_lang, nikola.utils.LocaleBorg().current_lang)
 
     def test_remembers_last_lang(self):
         lang_11, loc_11 = LocaleSupportInTesting.langlocales['default']
@@ -215,7 +217,8 @@ class TestLocaleBorg(unittest.TestCase):
         lang_11, loc_11 = LocaleSupportInTesting.langlocales['default']
         nikola.utils.LocaleBorg.reset()
         self.assertRaises(Exception, nikola.utils.LocaleBorg)
-        self.assertRaises(Exception, nikola.utils.LocaleBorg.set_locale, lang_11)
+        self.assertRaises(
+            Exception, nikola.utils.LocaleBorg.set_locale, lang_11)
 
     def test_set_locale_raises_on_invalid_lang(self):
         lang_11, loc_11 = LocaleSupportInTesting.langlocales['default']
@@ -235,10 +238,15 @@ class TestTestPreconditions(unittest.TestCase):
        instaled or environmet variables NIKOLA_LOCALE_DEFAULT  or
        NIKOLA_LOCALE_OTHER with bad values.
     """
+
     def test_langlocale_default_availability(self):
         msg = "META ERROR: The pair lang, locale : {0} {1} is invalid"
-        self.assertTrue(nikola.nikola.is_valid_locale(loc_11), msg.format(lang_11, loc_11))
+        self.assertTrue(
+            nikola.nikola.is_valid_locale(loc_11),
+            msg.format(lang_11, loc_11))
 
     def test_langlocale_other_availability(self):
         msg = "META ERROR: The pair lang, locale : {0} {1} is invalid"
-        self.assertTrue(nikola.nikola.is_valid_locale(loc_22), msg.format(lang_22, loc_22))
+        self.assertTrue(
+            nikola.nikola.is_valid_locale(loc_22),
+            msg.format(lang_22, loc_22))
